@@ -103,6 +103,9 @@ jobs:
           echo "开始配置 Git..."
           make configure
           
+          # 设置 STAGING_DIR 环境变量消除警告
+          export STAGING_DIR=${TOOLCHAIN_DIR}/../
+          
           # NO_PERL=1 禁用 perl，避免 configure 报错
           ./configure \
             --host=${{ env.TARGET_ARCH }}-linux-musl \
@@ -112,6 +115,7 @@ jobs:
             --without-expat \
             --without-tcltk \
             --without-python \
+            --without-zlib \
             --disable-pcre \
             --disable-pcre2 \
             ac_cv_fread_reads_directories=no \
