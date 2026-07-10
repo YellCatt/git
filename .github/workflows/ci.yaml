@@ -97,17 +97,20 @@ jobs:
           export STRIP="${{ env.CROSS_COMPILE }}strip"
           
           # 静态编译关键: -static
-          export CFLAGS="-Os -static -ffunction-sections -fdata-sections -fno-stack-protector"
-          export LDFLAGS="-static -Wl,--gc-sections"
+          export CFLAGS="-O2 -static"
+          export LDFLAGS="-static"
           
           echo "开始配置 Git..."
+          
+          # 设置 OpenWrt SDK 环境变量
+          export STAGING_DIR=${TOOLCHAIN_DIR}/../
+          export CPATH=${STAGING_DIR}/target-mipsel_24kc_musl/usr/include:$CPATH
+          export LIBRARY_PATH=${STAGING_DIR}/target-mipsel_24kc_musl/usr/lib:$LIBRARY_PATH
+          
           make configure
           
-          # 设置 STAGING_DIR 环境变量消除警告
-          export STAGING_DIR=${TOOLCHAIN_DIR}/../
-          
-          # NO_PERL=1 禁用 perl，避免 configure 报错
-          ./configure \
+          # NO_PERL=1 禁用 perl，使用 SDK 中的 zlib
+          NO_PERL=1 ./configure \
             --host=${{ env.TARGET_ARCH }}-linux-musl \
             --prefix=/usr \
             --without-openssl \
@@ -115,7 +118,6 @@ jobs:
             --without-expat \
             --without-tcltk \
             --without-python \
-            --without-zlib \
             --disable-pcre \
             --disable-pcre2 \
             ac_cv_fread_reads_directories=no \
@@ -123,7 +125,6 @@ jobs:
             ac_cv_iconv_omits_bom=no
           
           echo "开始编译..."
-          # 关键：NO_PERL=1 传给 make
           make -j$(nproc) V=1 NO_PERL=1 2>&1 | tee build.log
           
           echo "编译完成，检查文件类型..."
