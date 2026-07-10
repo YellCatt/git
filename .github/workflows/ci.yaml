@@ -101,6 +101,7 @@ jobs:
           export LDFLAGS="-static -Wl,--gc-sections"
           
           echo "开始配置 Git..."
+          export NO_PERL=1
           make configure
           
           ./configure \
@@ -185,3 +186,34 @@ jobs:
           echo "- 链接方式: 完全静态链接" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "下载 \`git-hiwifi-hc5761-mipsel\` artifact 获取二进制文件" >> $GITHUB_STEP_SUMMARY
+
+  release:
+    needs: build-static-git
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List downloaded artifacts
+        run: ls -la artifacts/
+
+      - name: Create or Update Dev Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="dev-latest"
+          echo "使用固定版本tag: $VERSION"
+          gh release delete "$VERSION" --yes 2>/dev/null || true
+          gh release create "$VERSION" \
+            --title "Development Build (Latest)" \
+            --notes "Automatic build from commit ${{ github.sha }}%0A%0A**Platforms:**%0A- Linux mipsle (极路由2 HiWiFi HC5761 - MT7620A, 静态编译)" \
+            --prerelease \
+            artifacts/*
