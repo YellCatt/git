@@ -1,0 +1,187 @@
+# .github/workflows/ci.yaml
+name: Build Static Git for HiWiFi HC5761 (MIPS)
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+env:
+  # 极路由2: MT7620A (MIPS 24KEc, mipsel架构)
+  TARGET_ARCH: mipsel
+  CROSS_COMPILE: mipsel-openwrt-linux-musl-
+  # OpenWrt 23.05 SDK 版本
+  OPENWRT_VERSION: 23.05.3
+
+jobs:
+  build-static-git:
+    name: Cross-compile static Git for MIPS
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+
+      # 缓存 OpenWrt SDK，避免每次下载
+      - name: Cache OpenWrt SDK
+        id: cache-sdk
+        uses: actions/cache@v4
+        with:
+          path: ~/openwrt-sdk
+          key: openwrt-sdk-${{ env.OPENWRT_VERSION }}-${{ env.TARGET_ARCH }}-${{ hashFiles('.github/workflows/ci.yaml') }}
+
+      - name: Download OpenWrt SDK
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        run: |
+          echo "下载 OpenWrt SDK for ${{ env.TARGET_ARCH }}..."
+          mkdir -p ~/openwrt-sdk
+          cd ~/openwrt-sdk
+          
+          # OpenWrt 23.05 SDK for ramips/mt7620 (MT7620A 属于 ramips 目标)
+          SDK_URL="https://downloads.openwrt.org/releases/${{ env.OPENWRT_VERSION }}/targets/ramips/mt7620/openwrt-sdk-${{ env.OPENWRT_VERSION }}-ramips-mt7620_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+          
+          wget -q --show-progress "$SDK_URL" -O sdk.tar.xz
+          tar xf sdk.tar.xz --strip-components=1
+          rm sdk.tar.xz
+          
+          echo "SDK 下载完成"
+          ls -la ~/openwrt-sdk/staging_dir/toolchain-*/
+
+      - name: Setup cross-compile environment
+        run: |
+          SDK_DIR="$HOME/openwrt-sdk"
+          TOOLCHAIN_DIR=$(find $SDK_DIR/staging_dir -maxdepth 1 -name "toolchain-*" -type d | head -n1)
+          
+          echo "TOOLCHAIN_DIR=$TOOLCHAIN_DIR" >> $GITHUB_ENV
+          echo "PATH=$TOOLCHAIN_DIR/bin:$PATH" >> $GITHUB_ENV
+          
+          # 验证交叉编译器
+          ${TOOLCHAIN_DIR}/bin/${{ env.CROSS_COMPILE }}gcc --version
+
+      - name: Cache Git source
+        id: cache-git
+        uses: actions/cache@v4
+        with:
+          path: git-source
+          key: git-source-${{ github.run_id }}
+          restore-keys: git-source-
+
+      - name: Clone Git source
+        if: steps.cache-git.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth=1 --branch=v2.45.2 https://github.com/git/git.git git-source
+          # 或者用最新稳定版: git clone --depth=1 https://github.com/git/git.git git-source
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libssl-dev \
+            gettext \
+            zlib1g-dev \
+            autoconf \
+            pkg-config
+
+      - name: Build static Git (MIPS)
+        working-directory: git-source
+        run: |
+          echo "配置交叉编译环境..."
+          export CC="${{ env.CROSS_COMPILE }}gcc"
+          export CXX="${{ env.CROSS_COMPILE }}g++"
+          export AR="${{ env.CROSS_COMPILE }}ar"
+          export RANLIB="${{ env.CROSS_COMPILE }}ranlib"
+          export STRIP="${{ env.CROSS_COMPILE }}strip"
+          
+          # 静态编译关键: -static
+          # 极路由2内存小，禁用不需要的功能减小体积
+          export CFLAGS="-Os -static -ffunction-sections -fdata-sections -fno-stack-protector"
+          export LDFLAGS="-static -Wl,--gc-sections"
+          
+          echo "开始配置 Git..."
+          make configure
+          
+          ./configure \
+            --host=${{ env.TARGET_ARCH }}-linux-musl \
+            --prefix=/usr \
+            --without-openssl \
+            --without-curl \
+            --without-expat \
+            --without-tcltk \
+            --without-python \
+            --without-perl \
+            --without-zlib \
+            --disable-pcre \
+            --disable-pcre2 \
+            ac_cv_fread_reads_directories=no \
+            ac_cv_snprintf_returns_bogus=no \
+            ac_cv_iconv_omits_bom=no
+          
+          echo "开始编译..."
+          make -j$(nproc) V=1 2>&1 | tee build.log
+          
+          echo "编译完成，检查文件类型..."
+          file git
+          ls -lh git
+
+      - name: Strip and verify binary
+        working-directory: git-source
+        run: |
+          export STRIP="${{ env.CROSS_COMPILE }}strip"
+          
+          # 复制一份未 strip 的用于调试
+          cp git git-unstripped
+          
+          # Strip 减小体积
+          $STRIP --strip-all git
+          
+          echo "=== 文件信息 ==="
+          file git
+          echo ""
+          echo "=== 文件大小 ==="
+          ls -lh git git-unstripped
+          echo ""
+          echo "=== 依赖检查 (应为空，因为是静态链接) ==="
+          readelf -d git 2>/dev/null | grep NEEDED || echo "无动态依赖 ✓"
+          echo ""
+          echo "=== 架构确认 ==="
+          readelf -h git | grep Machine
+
+      - name: Package for HiWiFi
+        working-directory: git-source
+        run: |
+          mkdir -p ../artifacts
+          
+          # 主二进制
+          cp git ../artifacts/git-mipsel-static
+          cp git-unstripped ../artifacts/git-mipsel-static-unstripped
+          
+          # 构建日志
+          cp build.log ../artifacts/
+          
+          # 打包
+          cd ../artifacts
+          tar czf git-hiwifi-hc5761.tar.gz git-mipsel-static git-mipsel-static-unstripped build.log
+          
+          echo "=== 最终产物 ==="
+          ls -lh
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: git-hiwifi-hc5761-mipsel
+          path: artifacts/
+
+      - name: Summary
+        run: |
+          echo "## 编译结果" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- 目标设备: 极路由2 (HiWiFi HC5761)" >> $GITHUB_STEP_SUMMARY
+          echo "- 架构: MIPS little-endian (mipsel)" >> $GITHUB_STEP_SUMMARY
+          echo "- SoC: MediaTek MT7620A" >> $GITHUB_STEP_SUMMARY
+          echo "- 编译器: OpenWrt GCC + musl" >> $GITHUB_STEP_SUMMARY
+          echo "- 链接方式: 完全静态链接" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "下载 \`git-hiwifi-hc5761-mipsel\` artifact 获取二进制文件" >> $GITHUB_STEP_SUMMARY
