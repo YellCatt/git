@@ -83,7 +83,8 @@ jobs:
             gettext \
             zlib1g-dev \
             autoconf \
-            pkg-config
+            pkg-config \
+            perl
 
       - name: Build static Git (MIPS)
         working-directory: git-source
@@ -96,14 +97,13 @@ jobs:
           export STRIP="${{ env.CROSS_COMPILE }}strip"
           
           # 静态编译关键: -static
-          # 极路由2内存小，禁用不需要的功能减小体积
           export CFLAGS="-Os -static -ffunction-sections -fdata-sections -fno-stack-protector"
           export LDFLAGS="-static -Wl,--gc-sections"
           
           echo "开始配置 Git..."
-          export NO_PERL=1
           make configure
           
+          # NO_PERL=1 禁用 perl，避免 configure 报错
           ./configure \
             --host=${{ env.TARGET_ARCH }}-linux-musl \
             --prefix=/usr \
@@ -112,8 +112,6 @@ jobs:
             --without-expat \
             --without-tcltk \
             --without-python \
-            --without-perl \
-            --without-zlib \
             --disable-pcre \
             --disable-pcre2 \
             ac_cv_fread_reads_directories=no \
@@ -121,7 +119,8 @@ jobs:
             ac_cv_iconv_omits_bom=no
           
           echo "开始编译..."
-          make -j$(nproc) V=1 2>&1 | tee build.log
+          # 关键：NO_PERL=1 传给 make
+          make -j$(nproc) V=1 NO_PERL=1 2>&1 | tee build.log
           
           echo "编译完成，检查文件类型..."
           file git
