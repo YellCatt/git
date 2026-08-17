@@ -2,7 +2,7 @@ name: Build Git for 极路由 (mipsel musl soft-float, 全模块, 强制静态)
 
 on:
   push:
-    branches: [ main ]
+    branches: [ master ]
   workflow_dispatch:
 
 jobs:
