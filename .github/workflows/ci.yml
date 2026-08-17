@@ -1,0 +1,414 @@
+name: Build Git for 极路由 (mipsel musl soft-float, 全模块, 强制静态)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Git
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          depth: 0
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            build-essential \
+            libssl-dev \
+            zlib1g-dev \
+            libexpat1-dev \
+            gettext \
+            perl \
+            python3 \
+            tcl-dev \
+            tk-dev \
+            pkg-config \
+            xz-utils \
+            wget \
+            curl \
+            pcre2-dev
+
+      - name: Install OpenWrt SDK for mt7620
+        run: |
+          wget -q "https://downloads.openwrt.org/releases/23.05.3/targets/ramips/mt7620/openwrt-sdk-23.05.3-ramips-mt7620_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+          mkdir -p openwrt-sdk
+          tar xf openwrt-sdk-*.tar.xz -C openwrt-sdk --strip-components=1
+          TOOLCHAIN_DIR=$(find openwrt-sdk/staging_dir -type d -name 'toolchain-*' | head -1)
+          TOOLCHAIN_DIR="$PWD/$TOOLCHAIN_DIR"
+          echo "TOOLCHAIN_DIR=$TOOLCHAIN_DIR" >> "$GITHUB_ENV"
+          echo "STAGING_DIR=$PWD/openwrt-sdk/staging_dir" >> "$GITHUB_ENV"
+          echo "$TOOLCHAIN_DIR/bin" >> "$GITHUB_PATH"
+          echo "=== Toolchain dir ==="
+          echo "$TOOLCHAIN_DIR"
+          echo "=== Cross compiler ==="
+          ls "$TOOLCHAIN_DIR/bin" | grep 'mipsel' | head -10 || true
+
+      - name: Cross-compile zlib (static)
+        run: |
+          cd /tmp
+          curl -fsSL --retry 3 -o zlib-1.3.1.tar.gz \
+            "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz"
+          if [ $(stat -c%s zlib-1.3.1.tar.gz) -lt 100000 ]; then
+            echo "ERROR: zlib download looks like an error page, trying mirror..."
+            curl -fsSL --retry 3 -o zlib-1.3.1.tar.gz \
+              "https://sourceforge.net/projects/libpng/files/zlib/1.3.1/zlib-1.3.1.tar.gz/download"
+          fi
+          tar xzf zlib-1.3.1.tar.gz
+          cd zlib-1.3.1
+
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+          CC=mipsel-openwrt-linux-musl-gcc \
+          AR=mipsel-openwrt-linux-musl-ar \
+          RANLIB=mipsel-openwrt-linux-musl-ranlib \
+          ./configure \
+            --prefix=/tmp/zlib-mipsel \
+            --static
+
+          make -j$(nproc)
+          make install
+
+          echo "=== zlib installed ==="
+          ls -la /tmp/zlib-mipsel/include/
+          ls -la /tmp/zlib-mipsel/lib/
+
+      - name: Cross-compile OpenSSL (static)
+        run: |
+          cd /tmp
+          curl -L --retry 3 -o openssl.tar.gz \
+            "https://www.openssl.org/source/openssl-3.0.13.tar.gz"
+          tar xzf openssl.tar.gz
+          cd openssl-3.0.13
+
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+          CC=mipsel-openwrt-linux-musl-gcc \
+          CXX=mipsel-openwrt-linux-musl-g++ \
+          AR=mipsel-openwrt-linux-musl-ar \
+          RANLIB=mipsel-openwrt-linux-musl-ranlib \
+          ./Configure linux-mips32 \
+            --prefix=/tmp/openssl-mipsel \
+            threads \
+            no-asm \
+            no-shared no-module no-legacy no-tests no-comp no-zlib no-ssl3 \
+            -static -Os
+
+          make -j$(nproc)
+          make install_sw
+
+          CONF_H="/tmp/openssl-mipsel/include/openssl/opensslconf.h"
+          if ! grep -q "OPENSSL_THREADS" "$CONF_H" 2>/dev/null; then
+            echo "Injecting OPENSSL_THREADS into opensslconf.h..."
+            echo "#define OPENSSL_THREADS" >> "$CONF_H"
+          fi
+          echo "=== opensslconf.h OPENSSL_THREADS check ==="
+          grep "OPENSSL_THREADS" "$CONF_H" || true
+
+      - name: Cross-compile cURL (static)
+        run: |
+          cd /tmp
+          curl -fsSL --retry 3 -o curl-8.5.0.tar.xz \
+            "https://curl.se/download/curl-8.5.0.tar.xz"
+          if [ $(stat -c%s curl-8.5.0.tar.xz) -lt 1000000 ]; then
+            echo "ERROR: curl download too small, trying older version..."
+            curl -fsSL --retry 3 -o curl.tar.xz \
+              "https://curl.se/download/curl-8.4.0.tar.xz"
+            tar xf curl.tar.xz
+            CURL_DIR=$(find . -maxdepth 1 -type d -name 'curl-*' | head -1)
+          else
+            tar xf curl-8.5.0.tar.xz
+            CURL_DIR="curl-8.5.0"
+          fi
+          cd "$CURL_DIR"
+
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+          CC=mipsel-openwrt-linux-musl-gcc \
+          AR=mipsel-openwrt-linux-musl-ar \
+          RANLIB=mipsel-openwrt-linux-musl-ranlib \
+          ./configure \
+            --host=mipsel-openwrt-linux-musl \
+            --prefix=/tmp/curl-mipsel \
+            --disable-shared \
+            --disable-dynamic \
+            --enable-static \
+            --with-openssl=/tmp/openssl-mipsel \
+            --with-zlib=/tmp/zlib-mipsel \
+            --without-libpsl \
+            --without-nghttp2 \
+            --without-brotli \
+            --without-zstd \
+            --disable-ftp \
+            --disable-gopher \
+            --disable-imap \
+            --disable-pop3 \
+            --disable-smtp \
+            --disable-telnet \
+            --disable-rtsp \
+            --disable-mqtt \
+            --disable-smb \
+            --disable-ws \
+            --disable-wss \
+            CPPFLAGS="-I/tmp/openssl-mipsel/include -I/tmp/zlib-mipsel/include" \
+            LDFLAGS="-static -L/tmp/openssl-mipsel/lib -L/tmp/zlib-mipsel/lib" \
+            LIBS="-lssl -lcrypto -lz -lpthread -ldl"
+
+          make -j$(nproc)
+          make install
+
+          echo "=== cURL installed ==="
+          ls -la /tmp/curl-mipsel/include/
+          ls -la /tmp/curl-mipsel/lib/
+
+      - name: Cross-compile Expat (static)
+        run: |
+          cd /tmp
+          curl -fsSL --retry 3 -o expat-2.6.4.tar.xz \
+            "https://github.com/libexpat/libexpat/releases/download/R_2_6_4/expat-2.6.4.tar.xz"
+          if [ $(stat -c%s expat-2.6.4.tar.xz) -lt 1000000 ]; then
+            echo "ERROR: expat download too small, trying older version..."
+            curl -fsSL --retry 3 -o expat.tar.xz \
+              "https://github.com/libexpat/libexpat/releases/download/R_2_5_0/expat-2.5.0.tar.xz"
+            tar xf expat.tar.xz
+            EXPAT_DIR=$(find . -maxdepth 1 -type d -name 'expat-*' | head -1)
+          else
+            tar xf expat-2.6.4.tar.xz
+            EXPAT_DIR="expat-2.6.4"
+          fi
+          cd "$EXPAT_DIR"
+
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+          CC=mipsel-openwrt-linux-musl-gcc \
+          AR=mipsel-openwrt-linux-musl-ar \
+          RANLIB=mipsel-openwrt-linux-musl-ranlib \
+          ./configure \
+            --host=mipsel-openwrt-linux-musl \
+            --prefix=/tmp/expat-mipsel \
+            --disable-shared \
+            --enable-static \
+            --without-xmlwf \
+            CFLAGS="-Os -static"
+
+          make -j$(nproc)
+          make install
+
+          echo "=== Expat installed ==="
+          ls -la /tmp/expat-mipsel/include/
+          ls -la /tmp/expat-mipsel/lib/
+
+      - name: Cross-compile PCRE2 (static)
+        run: |
+          cd /tmp
+          curl -fsSL --retry 3 -o pcre2-10.44.tar.gz \
+            "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.44/pcre2-10.44.tar.gz"
+          if [ $(stat -c%s pcre2-10.44.tar.gz) -lt 500000 ]; then
+            echo "ERROR: pcre2 download too small, trying older version..."
+            curl -fsSL --retry 3 -o pcre2.tar.gz \
+              "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.42/pcre2-10.42.tar.gz"
+            tar xzf pcre2.tar.gz
+            PCRE2_DIR=$(find . -maxdepth 1 -type d -name 'pcre2-*' | head -1)
+          else
+            tar xzf pcre2-10.44.tar.gz
+            PCRE2_DIR="pcre2-10.44"
+          fi
+          cd "$PCRE2_DIR"
+
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+          CC=mipsel-openwrt-linux-musl-gcc \
+          AR=mipsel-openwrt-linux-musl-ar \
+          RANLIB=mipsel-openwrt-linux-musl-ranlib \
+          ./configure \
+            --host=mipsel-openwrt-linux-musl \
+            --prefix=/tmp/pcre2-mipsel \
+            --disable-shared \
+            --enable-static \
+            --without-long-stack \
+            --disable-jit \
+            --disable-pcre2-8 \
+            --disable-pcre2-16 \
+            --disable-pcre2-32 \
+            CFLAGS="-Os -static"
+
+          make -j$(nproc)
+          make install
+
+          echo "=== PCRE2 installed ==="
+          ls -la /tmp/pcre2-mipsel/include/
+          ls -la /tmp/pcre2-mipsel/lib/
+
+      - name: Cross-compile gettext (static)
+        run: |
+          cd /tmp
+          curl -fsSL --retry 3 -o gettext-0.22.5.tar.xz \
+            "https://ftp.gnu.org/gnu/gettext/gettext-0.22.5.tar.xz"
+          if [ $(stat -c%s gettext-0.22.5.tar.xz) -lt 1000000 ]; then
+            echo "ERROR: gettext download too small, trying older version..."
+            curl -fsSL --retry 3 -o gettext.tar.xz \
+              "https://ftp.gnu.org/gnu/gettext/gettext-0.21.tar.xz"
+            tar xf gettext.tar.xz
+            GETTEXT_DIR=$(find . -maxdepth 1 -type d -name 'gettext-*' | head -1)
+          else
+            tar xf gettext-0.22.5.tar.xz
+            GETTEXT_DIR="gettext-0.22.5"
+          fi
+          cd "$GETTEXT_DIR"
+
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+          CC=mipsel-openwrt-linux-musl-gcc \
+          AR=mipsel-openwrt-linux-musl-ar \
+          RANLIB=mipsel-openwrt-linux-musl-ranlib \
+          ./configure \
+            --host=mipsel-openwrt-linux-musl \
+            --prefix=/tmp/gettext-mipsel \
+            --disable-shared \
+            --enable-static \
+            --without-libxml2 \
+            --disable-java \
+            --disable-native-java \
+            --disable-csharp \
+            CFLAGS="-Os -static"
+
+          make -j$(nproc)
+          make install
+
+          echo "=== gettext installed ==="
+          ls -la /tmp/gettext-mipsel/lib/
+
+      - name: Configure Git build (mipsel soft-float, static)
+        run: |
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+          export CC=mipsel-openwrt-linux-musl-gcc
+          export AR=mipsel-openwrt-linux-musl-ar
+          export RANLIB=mipsel-openwrt-linux-musl-ranlib
+          export STRIP=mipsel-openwrt-linux-musl-strip
+          export OBJCOPY=mipsel-openwrt-linux-musl-objcopy
+          export OBJDUMP=mipsel-openwrt-linux-musl-objdump
+          export NM=mipsel-openwrt-linux-musl-nm
+
+          export CFLAGS="-Os -static -march=mips32 -mtune=mips32"
+          export CPPFLAGS="-I/tmp/openssl-mipsel/include -I/tmp/zlib-mipsel/include -I/tmp/curl-mipsel/include -I/tmp/expat-mipsel/include -I/tmp/pcre2-mipsel/include -I/tmp/gettext-mipsel/include"
+          export LDFLAGS="-static -L/tmp/openssl-mipsel/lib -L/tmp/zlib-mipsel/lib -L/tmp/curl-mipsel/lib -L/tmp/expat-mipsel/lib -L/tmp/pcre2-mipsel/lib -L/tmp/gettext-mipsel/lib"
+          export LIBS="-lssl -lcrypto -lcurl -lexpat -lpcre2-8 -lz -lm -lpthread -ldl"
+
+          export NO_GETTEXT=UnfortunatelyYes
+          export NO_PYTHON=UnfortunatelyYes
+          export NO_TCLTK=UnfortunatelyYes
+          export NO_CURL=UnfortunatelyYes
+
+          echo "=== Git build configuration ==="
+          echo "CC=$CC"
+          echo "CFLAGS=$CFLAGS"
+          echo "LDFLAGS=$LDFLAGS"
+          echo "LIBS=$LIBS"
+
+          make -j$(nproc)
+
+      - name: Verify static link & soft-float
+        run: |
+          echo "=== Checking if git is statically linked ==="
+          file git
+
+          echo "=== Checking for dynamic interpreter ==="
+          readelf -l git | grep -i "interpreter" || true
+          if readelf -l git | grep -q "interpreter"; then
+            echo "WARNING: git is NOT fully static!"
+          else
+            echo "OK: git appears to be statically linked."
+          fi
+
+          echo "=== Checking for hard-float instructions ==="
+          if mipsel-openwrt-linux-musl-objdump -d git | grep -Eq '\s(ldc1|sdc1|add\.s|mul\.s|c\.eq\.s|madd\.s)\s'; then
+            echo "WARNING: Found FPU instructions!"
+          else
+            echo "OK: No FPU instructions found (soft-float confirmed)."
+          fi
+
+          echo "=== Checking linked libraries ==="
+          readelf -d git | head -20
+
+      - name: Install (without strip)
+        run: |
+          make install DESTDIR=/tmp/git-mipsel PREFIX=/usr/local
+
+          echo "=== Installed git ==="
+          ls -la /tmp/git-mipsel/usr/local/bin/
+          ls -la /tmp/git-mipsel/usr/local/libexec/git-core/ 2>/dev/null || true
+          mipsel-openwrt-linux-musl-strip /tmp/git-mipsel/usr/local/bin/git
+
+      - name: Strip & Cleanup
+        run: |
+          STRIP=mipsel-openwrt-linux-musl-strip
+
+          find /tmp/git-mipsel -name 'git-*' -type f -exec sh -c 'echo "Stripping $1"; $STRIP "$1" 2>/dev/null || true' _ {} \;
+
+          rm -rf /tmp/git-mipsel/usr/local/include
+          rm -rf /tmp/git-mipsel/usr/local/share/info
+          rm -rf /tmp/git-mipsel/usr/local/share/locale
+          rm -rf /tmp/git-mipsel/usr/local/share/man
+          rm -rf /tmp/git-mipsel/usr/local/share/doc
+          rm -rf /tmp/git-mipsel/usr/local/share/bash-completion
+          rm -rf /tmp/git-mipsel/usr/local/share/applications
+          rm -rf /tmp/git-mipsel/usr/local/share/icons
+          rm -rf /tmp/git-mipsel/usr/local/share/emacs
+          rm -f /tmp/git-mipsel/usr/local/share/git-core/templates/hooks/*.sample
+          rm -f /tmp/git-mipsel/usr/local/share/git-core/templates/info/exclude
+          rm -f /tmp/git-mipsel/usr/local/share/git-core/templates/description
+
+          echo "=== Final artifact size ==="
+          du -sh /tmp/git-mipsel
+          find /tmp/git-mipsel -type f | head -50
+          du -sh /tmp/git-mipsel/usr/local/bin/git
+          ls -la /tmp/git-mipsel/usr/local/libexec/git-core/ | wc -l
+          echo "git-core helpers:"
+          ls /tmp/git-mipsel/usr/local/libexec/git-core/
+
+      - name: Package
+        run: |
+          cd /tmp/git-mipsel
+          tar czf $GITHUB_WORKSPACE/git-mipsel-musl-sf.tar.gz .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: git-mipsel-musl-sf
+          path: git-mipsel-musl-sf.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: git-mipsel-musl-sf
+          path: artifacts
+
+      - name: List artifacts
+        run: ls -la artifacts/
+
+      - name: Create or Update Dev Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="dev-latest"
+          echo "Using fixed version tag: $VERSION"
+          gh release delete "$VERSION" --yes 2>/dev/null || true
+          gh release create "$VERSION" \
+            --title "Development Build (Latest)" \
+            --notes "Automatic build from commit ${{ github.sha }}%0A%0A**Platforms:**%0A- Linux mipsel musl soft-float (极路由 - 完全静态编译)%0A- 使用 OpenWrt SDK (mt7620) 交叉编译%0A- 内置 OpenSSL / cURL / Expat / PCRE2 / zlib / gettext%0A- 软浮点 (无 FPU 设备兼容)%0A- **完全静态链接，无需动态库**%0A- 所有 git 子命令 (git-*) 均静态链接%0A- 包含 git-web--browse / git-cvsserver 等可选组件" \
+            --prerelease \
+            artifacts/git-mipsel-musl-sf.tar.gz
