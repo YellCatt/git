@@ -281,7 +281,7 @@ jobs:
           echo "=== gettext installed ==="
           ls -la /tmp/gettext-mipsel/lib/
 
-      - name: Configure Git build (mipsel soft-float, static)
+      - name: Configure & Build Git (mipsel soft-float, static)
         run: |
           export PATH="$TOOLCHAIN_DIR/bin:$PATH"
 
@@ -303,6 +303,25 @@ jobs:
           export NO_TCLTK=UnfortunatelyYes
           export NO_CURL=UnfortunatelyYes
 
+          # 关键修复：将编译环境持久化到后续步骤
+          {
+            echo "CC=$CC"
+            echo "AR=$AR"
+            echo "RANLIB=$RANLIB"
+            echo "STRIP=$STRIP"
+            echo "OBJCOPY=$OBJCOPY"
+            echo "OBJDUMP=$OBJDUMP"
+            echo "NM=$NM"
+            echo "CFLAGS=$CFLAGS"
+            echo "CPPFLAGS=$CPPFLAGS"
+            echo "LDFLAGS=$LDFLAGS"
+            echo "LIBS=$LIBS"
+            echo "NO_GETTEXT=$NO_GETTEXT"
+            echo "NO_PYTHON=$NO_PYTHON"
+            echo "NO_TCLTK=$NO_TCLTK"
+            echo "NO_CURL=$NO_CURL"
+          } >> "$GITHUB_ENV"
+
           echo "=== Git build configuration ==="
           echo "CC=$CC"
           echo "CFLAGS=$CFLAGS"
@@ -310,6 +329,15 @@ jobs:
           echo "LIBS=$LIBS"
 
           make -j$(nproc)
+
+      - name: Install Git
+        run: |
+          make install DESTDIR=/tmp/git-mipsel PREFIX=/usr/local
+
+          echo "=== Installed git ==="
+          ls -la /tmp/git-mipsel/usr/local/bin/
+          ls -la /tmp/git-mipsel/usr/local/libexec/git-core/ 2>/dev/null || true
+          mipsel-openwrt-linux-musl-strip /tmp/git-mipsel/usr/local/bin/git
 
       - name: Verify static link & soft-float
         run: |
@@ -333,15 +361,6 @@ jobs:
 
           echo "=== Checking linked libraries ==="
           readelf -d git | head -20
-
-      - name: Install (without strip)
-        run: |
-          make install DESTDIR=/tmp/git-mipsel PREFIX=/usr/local
-
-          echo "=== Installed git ==="
-          ls -la /tmp/git-mipsel/usr/local/bin/
-          ls -la /tmp/git-mipsel/usr/local/libexec/git-core/ 2>/dev/null || true
-          mipsel-openwrt-linux-musl-strip /tmp/git-mipsel/usr/local/bin/git
 
       - name: Strip & Cleanup
         run: |
