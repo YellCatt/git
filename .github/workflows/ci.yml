@@ -32,7 +32,7 @@ jobs:
             xz-utils \
             wget \
             curl \
-            pcre2-dev
+            libpcre2-dev
 
       - name: Install OpenWrt SDK for mt7620
         run: |
