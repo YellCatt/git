@@ -281,9 +281,10 @@ jobs:
           echo "=== gettext installed ==="
           ls -la /tmp/gettext-mipsel/lib/
 
-      - name: Configure & Build Git (mipsel soft-float, static)
+      - name: Build, Install & Strip Git (single step)
         run: |
           export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+          export prefix=/usr/local
 
           export CC=mipsel-openwrt-linux-musl-gcc
           export AR=mipsel-openwrt-linux-musl-ar
@@ -303,72 +304,58 @@ jobs:
           export NO_TCLTK=UnfortunatelyYes
           export NO_CURL=UnfortunatelyYes
 
-          # 关键修复：将编译环境持久化到后续步骤
-          {
-            echo "CC=$CC"
-            echo "AR=$AR"
-            echo "RANLIB=$RANLIB"
-            echo "STRIP=$STRIP"
-            echo "OBJCOPY=$OBJCOPY"
-            echo "OBJDUMP=$OBJDUMP"
-            echo "NM=$NM"
-            echo "CFLAGS=$CFLAGS"
-            echo "CPPFLAGS=$CPPFLAGS"
-            echo "LDFLAGS=$LDFLAGS"
-            echo "LIBS=$LIBS"
-            echo "NO_GETTEXT=$NO_GETTEXT"
-            echo "NO_PYTHON=$NO_PYTHON"
-            echo "NO_TCLTK=$NO_TCLTK"
-            echo "NO_CURL=$NO_CURL"
-          } >> "$GITHUB_ENV"
+          echo "=== Building Git ==="
+          make prefix=/usr/local -j$(nproc)
 
-          echo "=== Git build configuration ==="
-          echo "CC=$CC"
-          echo "CFLAGS=$CFLAGS"
-          echo "LDFLAGS=$LDFLAGS"
-          echo "LIBS=$LIBS"
+          echo "=== Checking compiled git binary ==="
+          file git
+          readelf -h git | head -5 || true
 
-          make -j$(nproc)
-
-      - name: Install Git
-        run: |
-          # 关键修复：Git Makefile 使用小写 prefix，不是 PREFIX
+          echo "=== Installing Git ==="
           make install DESTDIR=/tmp/git-mipsel prefix=/usr/local
 
-          echo "=== Installed git ==="
-          ls -la /tmp/git-mipsel/usr/local/bin/
-          ls -la /tmp/git-mipsel/usr/local/libexec/git-core/ 2>/dev/null || true
-          mipsel-openwrt-linux-musl-strip /tmp/git-mipsel/usr/local/bin/git
+          echo "=== Installed tree ==="
+          find /tmp/git-mipsel -maxdepth 3 -type d
+
+          echo "=== File type of installed git ==="
+          file /tmp/git-mipsel/usr/local/bin/git
+
+          echo "=== Stripping all MIPS ELF binaries ==="
+          find /tmp/git-mipsel -type f -exec sh -c '
+            if file "$1" | grep -q "ELF.*MIPS"; then
+              echo "Stripping $1"
+              mipsel-openwrt-linux-musl-strip "$1" 2>/dev/null || true
+            fi
+          ' _ {} \;
 
       - name: Verify static link & soft-float
         run: |
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+          GIT_BIN="/tmp/git-mipsel/usr/local/bin/git"
           echo "=== Checking if git is statically linked ==="
-          file git
+          file "$GIT_BIN"
 
           echo "=== Checking for dynamic interpreter ==="
-          readelf -l git | grep -i "interpreter" || true
-          if readelf -l git | grep -q "interpreter"; then
+          readelf -l "$GIT_BIN" | grep -i "interpreter" || true
+          if readelf -l "$GIT_BIN" | grep -q "interpreter"; then
             echo "WARNING: git is NOT fully static!"
           else
             echo "OK: git appears to be statically linked."
           fi
 
           echo "=== Checking for hard-float instructions ==="
-          if mipsel-openwrt-linux-musl-objdump -d git | grep -Eq '\s(ldc1|sdc1|add\.s|mul\.s|c\.eq\.s|madd\.s)\s'; then
+          if mipsel-openwrt-linux-musl-objdump -d "$GIT_BIN" | grep -Eq '\s(ldc1|sdc1|add\.s|mul\.s|c\.eq\.s|madd\.s)\s'; then
             echo "WARNING: Found FPU instructions!"
           else
             echo "OK: No FPU instructions found (soft-float confirmed)."
           fi
 
           echo "=== Checking linked libraries ==="
-          readelf -d git | head -20
+          readelf -d "$GIT_BIN" | head -20
 
-      - name: Strip & Cleanup
+      - name: Cleanup & Package
         run: |
-          STRIP=mipsel-openwrt-linux-musl-strip
-
-          find /tmp/git-mipsel -name 'git-*' -type f -exec sh -c 'echo "Stripping $1"; $STRIP "$1" 2>/dev/null || true' _ {} \;
-
           rm -rf /tmp/git-mipsel/usr/local/include
           rm -rf /tmp/git-mipsel/usr/local/share/info
           rm -rf /tmp/git-mipsel/usr/local/share/locale
@@ -390,8 +377,6 @@ jobs:
           echo "git-core helpers:"
           ls /tmp/git-mipsel/usr/local/libexec/git-core/
 
-      - name: Package
-        run: |
           cd /tmp/git-mipsel
           tar czf $GITHUB_WORKSPACE/git-mipsel-musl-sf.tar.gz .
 
