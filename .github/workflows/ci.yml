@@ -332,7 +332,8 @@ jobs:
 
       - name: Install Git
         run: |
-          make install DESTDIR=/tmp/git-mipsel PREFIX=/usr/local
+          # 关键修复：Git Makefile 使用小写 prefix，不是 PREFIX
+          make install DESTDIR=/tmp/git-mipsel prefix=/usr/local
 
           echo "=== Installed git ==="
           ls -la /tmp/git-mipsel/usr/local/bin/
