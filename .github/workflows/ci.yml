@@ -13,7 +13,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
-          depth: 0
+          fetch-depth: 0
 
       - name: Install host dependencies
         run: |
@@ -287,26 +287,43 @@ jobs:
           export RANLIB=mipsel-openwrt-linux-musl-ranlib
           export STRIP=mipsel-openwrt-linux-musl-strip
           export OBJCOPY=mipsel-openwrt-linux-musl-objcopy
-          export OBJDUMP=mipsel-openwrt-linux-musl-objdump
           export NM=mipsel-openwrt-linux-musl-nm
 
           export CFLAGS="-Os -static -march=mips32 -mtune=mips32"
-          export CPPFLAGS="-I/tmp/openssl-mipsel/include -I/tmp/zlib-mipsel/include -I/tmp/curl-mipsel/include -I/tmp/expat-mipsel/include -I/tmp/pcre2-mipsel/include -I/tmp/gettext-mipsel/include"
-          
-          # 关键修复：静态链接时把 -l 库放到 LDFLAGS 末尾，而不是 LIBS
-          export LDFLAGS="-static -L/tmp/openssl-mipsel/lib -L/tmp/zlib-mipsel/lib -L/tmp/curl-mipsel/lib -L/tmp/expat-mipsel/lib -L/tmp/pcre2-mipsel/lib -L/tmp/gettext-mipsel/lib -lssl -lcrypto -lcurl -lexpat -lpcre2-8 -lz -lm -lpthread -ldl"
-          
-          # 启用 PCRE2 支持
+          export CPPFLAGS="-I/tmp/openssl-mipsel/include -I/tmp/zlib-mipsel/include -I/tmp/curl-mipsel/include -I/tmp/expat-mipsel/include -I/tmp/pcre2-mipsel/include"
+
+          # 显式告诉 Git 每个依赖库的安装前缀
+          export CURLDIR=/tmp/curl-mipsel
+          export EXPATDIR=/tmp/expat-mipsel
+          export LIBPCREDIR=/tmp/pcre2-mipsel
+          export OPENSSLDIR=/tmp/openssl-mipsel
+          export ZLIB_PATH=/tmp/zlib-mipsel
+
+          export LDFLAGS="-static"
+
+          # 禁用宿主机的 pkg-config 和 curl-config，防止它们返回 x86_64 路径干扰交叉编译
+          export PKG_CONFIG=/bin/false
+          export CURL_CONFIG=/bin/false
+
+          # 功能开关
           export USE_LIBPCRE2=YesPlease
-          
-          # 禁用不需要的组件
           export NO_GETTEXT=UnfortunatelyYes
           export NO_PYTHON=UnfortunatelyYes
           export NO_TCLTK=UnfortunatelyYes
-          # 移除了 NO_CURL，因为手动编译并链接了 cURL
 
           echo "=== Building Git ==="
-          make prefix=/usr/local -j$(nproc)
+          # 关键修复：命令行显式传入工具链变量和 CURL 库参数
+          # Git 的 Makefile 里有 "CC = cc" 会覆盖环境变量，必须通过命令行强制覆盖
+          make \
+            CC="$CC" \
+            LD="$CC" \
+            AR="$AR" \
+            RANLIB="$RANLIB" \
+            STRIP="$STRIP" \
+            CURL_LIBCURL="-L/tmp/curl-mipsel/lib -lcurl" \
+            CURL_CFLAGS="-I/tmp/curl-mipsel/include" \
+            prefix=/usr/local \
+            -j$(nproc)
 
           echo "=== Verifying compiled git binary ==="
           if [ ! -f git ]; then
@@ -342,22 +359,17 @@ jobs:
           echo "=== Fixing hardlinks (git-receive-pack, git-upload-archive) ==="
           cd /tmp/git-mipsel/usr/local/bin
           if [ -f git-upload-pack ]; then
-            [ -e git-receive-pack ] && rm -f git
-          echo "=== Fixing hardlinks (git-receive-pack, git-upload-archive) ==="
-          cd /tmp/git-mipsel/usr/local/bin
-          if [ -f git-upload-pack ]; then
             [ -e git-receive-pack ] && rm -f git-receive-pack
             [ -e git-upload-archive ] && rm -f git-upload-archive
             cp git-upload-pack git-receive-pack
             cp git-upload-pack git-upload-archive
             echo "Hardlinks replaced with copies"
           fi
-          ls -la git-upload-pack git-receive-pack git-upload-archive
+          ls -la git-upload-pack git-receive-pack git-upload-archive || true
 
           echo "=== Safe strip all binaries ==="
           find /tmp/git-mipsel -type f -size +1k -exec sh -c '
             if file "$1" | grep -q "ELF.*MIPS"; then
-              # 备份后 strip，如果 strip 后变空则恢复
               cp "$1" "$1.bak"
               mipsel-openwrt-linux-musl-strip "$1" 2>/dev/null || true
               if [ ! -s "$1" ] || [ "$(stat -c%s "$1")" -lt 1024 ]; then
