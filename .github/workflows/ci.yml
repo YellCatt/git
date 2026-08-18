@@ -32,7 +32,8 @@ jobs:
             xz-utils \
             wget \
             curl \
-            libpcre2-dev
+            libpcre2-dev \
+            file
 
       - name: Install OpenWrt SDK for mt7620
         run: |
@@ -75,7 +76,6 @@ jobs:
           make install
 
           echo "=== zlib installed ==="
-          ls -la /tmp/zlib-mipsel/include/
           ls -la /tmp/zlib-mipsel/lib/
 
       - name: Cross-compile OpenSSL (static)
@@ -136,7 +136,6 @@ jobs:
             --host=mipsel-openwrt-linux-musl \
             --prefix=/tmp/curl-mipsel \
             --disable-shared \
-            --disable-dynamic \
             --enable-static \
             --with-openssl=/tmp/openssl-mipsel \
             --with-zlib=/tmp/zlib-mipsel \
@@ -163,7 +162,6 @@ jobs:
           make install
 
           echo "=== cURL installed ==="
-          ls -la /tmp/curl-mipsel/include/
           ls -la /tmp/curl-mipsel/lib/
 
       - name: Cross-compile Expat (static)
@@ -200,7 +198,6 @@ jobs:
           make install
 
           echo "=== Expat installed ==="
-          ls -la /tmp/expat-mipsel/include/
           ls -la /tmp/expat-mipsel/lib/
 
       - name: Cross-compile PCRE2 (static)
@@ -239,7 +236,6 @@ jobs:
           make install
 
           echo "=== PCRE2 installed ==="
-          ls -la /tmp/pcre2-mipsel/include/
           ls -la /tmp/pcre2-mipsel/lib/
 
       - name: Cross-compile gettext (static)
@@ -281,10 +277,10 @@ jobs:
           echo "=== gettext installed ==="
           ls -la /tmp/gettext-mipsel/lib/
 
-      - name: Build, Install & Strip Git (single step)
+      - name: Build, Install & Verify Git
         run: |
+          set -euo pipefail
           export PATH="$TOOLCHAIN_DIR/bin:$PATH"
-          export prefix=/usr/local
 
           export CC=mipsel-openwrt-linux-musl-gcc
           export AR=mipsel-openwrt-linux-musl-ar
@@ -296,37 +292,94 @@ jobs:
 
           export CFLAGS="-Os -static -march=mips32 -mtune=mips32"
           export CPPFLAGS="-I/tmp/openssl-mipsel/include -I/tmp/zlib-mipsel/include -I/tmp/curl-mipsel/include -I/tmp/expat-mipsel/include -I/tmp/pcre2-mipsel/include -I/tmp/gettext-mipsel/include"
-          export LDFLAGS="-static -L/tmp/openssl-mipsel/lib -L/tmp/zlib-mipsel/lib -L/tmp/curl-mipsel/lib -L/tmp/expat-mipsel/lib -L/tmp/pcre2-mipsel/lib -L/tmp/gettext-mipsel/lib"
-          export LIBS="-lssl -lcrypto -lcurl -lexpat -lpcre2-8 -lz -lm -lpthread -ldl"
-
+          
+          # 关键修复：静态链接时把 -l 库放到 LDFLAGS 末尾，而不是 LIBS
+          export LDFLAGS="-static -L/tmp/openssl-mipsel/lib -L/tmp/zlib-mipsel/lib -L/tmp/curl-mipsel/lib -L/tmp/expat-mipsel/lib -L/tmp/pcre2-mipsel/lib -L/tmp/gettext-mipsel/lib -lssl -lcrypto -lcurl -lexpat -lpcre2-8 -lz -lm -lpthread -ldl"
+          
+          # 启用 PCRE2 支持
+          export USE_LIBPCRE2=YesPlease
+          
+          # 禁用不需要的组件
           export NO_GETTEXT=UnfortunatelyYes
           export NO_PYTHON=UnfortunatelyYes
           export NO_TCLTK=UnfortunatelyYes
-          export NO_CURL=UnfortunatelyYes
+          # 移除了 NO_CURL，因为手动编译并链接了 cURL
 
           echo "=== Building Git ==="
           make prefix=/usr/local -j$(nproc)
 
-          echo "=== Checking compiled git binary ==="
+          echo "=== Verifying compiled git binary ==="
+          if [ ! -f git ]; then
+            echo "ERROR: git binary not found after make!"
+            exit 1
+          fi
+          GIT_SIZE=$(stat -c%s git)
+          if [ "$GIT_SIZE" -lt 1024 ]; then
+            echo "ERROR: git binary is too small (${GIT_SIZE} bytes), build likely failed!"
+            exit 1
+          fi
+          echo "git binary size: ${GIT_SIZE} bytes"
           file git
           readelf -h git | head -5 || true
 
           echo "=== Installing Git ==="
           make install DESTDIR=/tmp/git-mipsel prefix=/usr/local
 
-          echo "=== Installed tree ==="
-          find /tmp/git-mipsel -maxdepth 3 -type d
+          echo "=== Verifying installed git binary ==="
+          INSTALLED_GIT="/tmp/git-mipsel/usr/local/bin/git"
+          if [ ! -f "$INSTALLED_GIT" ]; then
+            echo "ERROR: installed git binary not found!"
+            exit 1
+          fi
+          INSTALLED_SIZE=$(stat -c%s "$INSTALLED_GIT")
+          if [ "$INSTALLED_SIZE" -lt 1024 ]; then
+            echo "ERROR: installed git binary is too small (${INSTALLED_SIZE} bytes)!"
+            exit 1
+          fi
+          echo "Installed git binary size: ${INSTALLED_SIZE} bytes"
+          file "$INSTALLED_GIT"
 
-          echo "=== File type of installed git ==="
-          file /tmp/git-mipsel/usr/local/bin/git
+          echo "=== Fixing hardlinks (git-receive-pack, git-upload-archive) ==="
+          cd /tmp/git-mipsel/usr/local/bin
+          if [ -f git-upload-pack ]; then
+            [ -e git-receive-pack ] && rm -f git
+          echo "=== Fixing hardlinks (git-receive-pack, git-upload-archive) ==="
+          cd /tmp/git-mipsel/usr/local/bin
+          if [ -f git-upload-pack ]; then
+            [ -e git-receive-pack ] && rm -f git-receive-pack
+            [ -e git-upload-archive ] && rm -f git-upload-archive
+            cp git-upload-pack git-receive-pack
+            cp git-upload-pack git-upload-archive
+            echo "Hardlinks replaced with copies"
+          fi
+          ls -la git-upload-pack git-receive-pack git-upload-archive
 
-          echo "=== Stripping all MIPS ELF binaries ==="
-          find /tmp/git-mipsel -type f -exec sh -c '
+          echo "=== Safe strip all binaries ==="
+          find /tmp/git-mipsel -type f -size +1k -exec sh -c '
             if file "$1" | grep -q "ELF.*MIPS"; then
-              echo "Stripping $1"
+              # 备份后 strip，如果 strip 后变空则恢复
+              cp "$1" "$1.bak"
               mipsel-openwrt-linux-musl-strip "$1" 2>/dev/null || true
+              if [ ! -s "$1" ] || [ "$(stat -c%s "$1")" -lt 1024 ]; then
+                echo "WARNING: strip broke $1, restoring backup"
+                mv "$1.bak" "$1"
+              else
+                rm -f "$1.bak"
+              fi
             fi
           ' _ {} \;
+
+          echo "=== Final bin check ==="
+          for f in git git-shell git-upload-pack git-receive-pack git-upload-archive scalar; do
+            if [ -f "/tmp/git-mipsel/usr/local/bin/$f" ]; then
+              sz=$(stat -c%s "/tmp/git-mipsel/usr/local/bin/$f")
+              echo "$f: ${sz} bytes"
+              if [ "$sz" -lt 1024 ]; then
+                echo "ERROR: $f is too small!"
+                exit 1
+              fi
+            fi
+          done
 
       - name: Verify static link & soft-float
         run: |
@@ -337,9 +390,9 @@ jobs:
           file "$GIT_BIN"
 
           echo "=== Checking for dynamic interpreter ==="
-          readelf -l "$GIT_BIN" | grep -i "interpreter" || true
           if readelf -l "$GIT_BIN" | grep -q "interpreter"; then
             echo "WARNING: git is NOT fully static!"
+            readelf -l "$GIT_BIN" | grep "interpreter"
           else
             echo "OK: git appears to be statically linked."
           fi
@@ -351,8 +404,8 @@ jobs:
             echo "OK: No FPU instructions found (soft-float confirmed)."
           fi
 
-          echo "=== Checking linked libraries ==="
-          readelf -d "$GIT_BIN" | head -20
+          echo "=== Checking linked libraries (should be empty for static) ==="
+          readelf -d "$GIT_BIN" | grep -E "NEEDED|Shared library" || echo "OK: No dynamic libraries linked."
 
       - name: Cleanup & Package
         run: |
