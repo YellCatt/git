@@ -9,12 +9,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Git 2.38.5 (无 Rust 依赖)
+      - name: Checkout Git 2.38.5
         uses: actions/checkout@v4
         with:
           repository: git/git
           ref: v2.38.5
-          submodules: recursive
           fetch-depth: 1
 
       - name: Install host dependencies
@@ -112,7 +111,7 @@ jobs:
           echo "=== opensslconf.h OPENSSL_THREADS check ==="
           grep "OPENSSL_THREADS" "$CONF_H" || true
 
-      - name: Cross-compile cURL (static)
+      - name: Cross-compile cURL (static, 禁用NTLM)
         run: |
           cd /tmp
           curl -fsSL --retry 3 -o curl-8.5.0.tar.xz \
@@ -156,6 +155,8 @@ jobs:
             --disable-smb \
             --disable-ws \
             --disable-wss \
+            --disable-ntlm \
+            --disable-ntlm-wb \
             CPPFLAGS="-I/tmp/openssl-mipsel/include -I/tmp/zlib-mipsel/include" \
             LDFLAGS="-static -L/tmp/openssl-mipsel/lib -L/tmp/zlib-mipsel/lib" \
             LIBS="-lssl -lcrypto -lz -lpthread -ldl"
@@ -317,7 +318,7 @@ jobs:
             AR="$AR" \
             RANLIB="$RANLIB" \
             STRIP="$STRIP" \
-            CURL_LIBCURL="-L/tmp/curl-mipsel/lib -lcurl" \
+            CURL_LIBCURL="-L/tmp/curl-mipsel/lib -lcurl -lssl -lcrypto -lz -lpthread -ldl" \
             CURL_CFLAGS="-I/tmp/curl-mipsel/include" \
             NO_REGEX=NeedsStartEnd \
             prefix=/usr/local \
@@ -382,7 +383,7 @@ jobs:
           echo "=== Final bin check ==="
           for f in git git-shell git-upload-pack git-receive-pack git-upload-archive scalar; do
             if [ -f "/tmp/git-mipsel/usr/local/bin/$f" ]; then
-              sz=$(stat -c%s "/tmp/git-mipsel/usr/local/bin/$f")
+              sz=$(stat -c%s "/tmp/git-mipsel/usr/local/bin/$f"
               echo "$f: ${sz} bytes"
               if [ "$sz" -lt 1024 ]; then
                 echo "ERROR: $f is too small!"
