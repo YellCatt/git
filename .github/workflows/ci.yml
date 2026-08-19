@@ -41,11 +41,18 @@ jobs:
       - name: Remove pre-installed Rust toolchain
         run: |
           rustup self uninstall -y 2>/dev/null || true
-          sudo rm -rf /usr/local/cargo /usr/local/rustup /root/.cargo /root/.rustup ~/.cargo ~/.rustup
+          sudo rm -rf \
+            /usr/local/cargo /usr/local/rustup \
+            /root/.cargo /root/.rustup \
+            ~/.cargo ~/.rustup \
+            /etc/profile.d/rust.sh \
+            /usr/share/rustup \
+            /usr/bin/cargo /usr/bin/rustc /usr/bin/rustup \
+            /usr/lib/cargo /usr/lib/rustc
           hash -r
           echo "=== Verifying no Rust tools remain ==="
-          ! which cargo || (echo "ERROR: cargo still exists!"; exit 1)
-          ! which rustc || (echo "ERROR: rustc still exists!"; exit 1)
+          ! command -v cargo >/dev/null 2>&1 || (echo "ERROR: cargo still exists!"; exit 1)
+          ! command -v rustc >/dev/null 2>&1 || (echo "ERROR: rustc still exists!"; exit 1)
           echo "OK: Rust toolchain fully removed."
 
       - name: Install OpenWrt SDK for mt7620
@@ -224,10 +231,23 @@ jobs:
           export PKG_CONFIG_LIBDIR="/tmp/openssl-mipsel/lib/pkgconfig:/tmp/curl-mipsel/lib/pkgconfig:/tmp/zlib-mipsel/lib/pkgconfig:/tmp/expat-mipsel/lib/pkgconfig:/tmp/pcre2-mipsel/lib/pkgconfig"
           export CURL_CONFIG=/tmp/curl-mipsel/bin/curl-config
 
+          # 关键修复 1：彻底清理 git 源码中可能残留的生成文件
+          # 如果仓库里误提交了 config.mak.autogen 等文件，会导致 configure 读取旧缓存
+          echo "=== Cleaning generated files ==="
+          make distclean 2>/dev/null || true
+          rm -f config.mak.autogen config.mak.autogen~ config.status configure
+          rm -rf target  # 清除可能残留的 Rust target 目录
+
+          # 关键修复 2：再次确保 Rust 工具链绝对不存在
+          unset CARGO RUSTC RUSTUP_TOOLCHAIN CARGO_HOME RUSTUP_HOME 2>/dev/null || true
+          ! command -v cargo >/dev/null 2>&1 || (echo "ERROR: cargo still exists!"; exit 1)
+          ! command -v rustc >/dev/null 2>&1 || (echo "ERROR: rustc still exists!"; exit 1)
+
           echo "=== Generating configure script ==="
           make configure
 
           echo "=== Running configure ==="
+          # 关键修复 3：ac_cv_prog_* 强制告诉 configure "没有 Rust 工具"
           ./configure \
             --host=mipsel-openwrt-linux-musl \
             --prefix=/usr/local \
@@ -242,6 +262,8 @@ jobs:
             ac_cv_iconv_omits_bom=no \
             ac_cv_fread_reads_directories=no \
             ac_cv_snprintf_returns_bogus=no \
+            ac_cv_prog_CARGO= \
+            ac_cv_prog_RUSTC= \
             CFLAGS="-Os -static -march=mips32 -mtune=mips32" \
             CPPFLAGS="-I/tmp/openssl-mipsel/include -I/tmp/zlib-mipsel/include -I/tmp/curl-mipsel/include -I/tmp/expat-mipsel/include -I/tmp/pcre2-mipsel/include" \
             LDFLAGS="-static -L/tmp/openssl-mipsel/lib -L/tmp/curl-mipsel/lib -L/tmp/zlib-mipsel/lib -L/tmp/expat-mipsel/lib -L/tmp/pcre2-mipsel/lib" \
@@ -249,6 +271,16 @@ jobs:
             CC="$CC" \
             AR="$AR" \
             RANLIB="$RANLIB"
+
+          # 关键修复 4：configure 后双重保险，如果它仍然写入了 HAVE_RUST，直接删除
+          if [ -f config.mak.autogen ]; then
+            echo "=== Checking config.mak.autogen for Rust ==="
+            if grep -q "HAVE_RUST" config.mak.autogen 2>/dev/null; then
+              echo "WARNING: HAVE_RUST found in config.mak.autogen, removing..."
+              sed -i '/HAVE_RUST/d; /^CARGO=/d; /^RUSTC=/d' config.mak.autogen
+              cat config.mak.autogen | grep -E "HAVE_RUST|CARGO|RUSTC" || echo "OK: Rust lines removed."
+            fi
+          fi
 
           echo "=== Building Git ==="
           make \
@@ -260,6 +292,7 @@ jobs:
             NO_GETTEXT=Yes \
             NO_PYTHON=Yes \
             NO_TCLTK=Yes \
+            HAVE_RUST= \
             prefix=/usr/local \
             -j$(nproc)
 
