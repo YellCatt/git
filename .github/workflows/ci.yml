@@ -1,4 +1,4 @@
-name: Build Git for 极路由 (mipsel musl soft-float, 全模块, 强制静态, 含 Rust/gix)
+name: Build Git for 极路由 (mipsel musl soft-float, 全模块, 强制静态)
 
 on:
   push:
@@ -9,11 +9,13 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Git
+      - name: Checkout Git 2.38.5 (无 Rust 依赖)
         uses: actions/checkout@v4
         with:
+          repository: git/git
+          ref: v2.38.5
           submodules: recursive
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Install host dependencies
         run: |
@@ -34,34 +36,6 @@ jobs:
             curl \
             libpcre2-dev \
             file
-
-      - name: Install Rust toolchain for mipsel cross-compilation
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-          . "$HOME/.cargo/env"
-
-          # 添加 mipsel musl target
-          rustup target add mipsel-unknown-linux-musl
-
-          # 配置 cargo 使用 OpenWrt 交叉编译器作为链接器
-          mkdir -p "$HOME/.cargo"
-          cat > "$HOME/.cargo/config.toml" << 'EOF'
-          [target.mipsel-unknown-linux-musl]
-          linker = "mipsel-openwrt-linux-musl-gcc"
-          rustflags = ["-C", "link-arg=-static"]
-          EOF
-
-          # 注入环境变量，供后续步骤使用
-          echo "CARGO_BUILD_TARGET=mipsel-unknown-linux-musl" >> "$GITHUB_ENV"
-          echo "CARGO_HOME=$HOME/.cargo" >> "$GITHUB_ENV"
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-
-          echo "=== Rust toolchain info ==="
-          cargo --version
-          rustc --version
-          rustup show
-          echo "=== Cargo config ==="
-          cat "$HOME/.cargo/config.toml"
 
       - name: Install OpenWrt SDK for mt7620
         run: |
@@ -309,9 +283,6 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="$TOOLCHAIN_DIR/bin:$PATH"
-          # 确保 cargo 在 PATH 中
-          . "$HOME/.cargo/env"
-          export CARGO_BUILD_TARGET=mipsel-unknown-linux-musl
 
           export CC=mipsel-openwrt-linux-musl-gcc
           export AR=mipsel-openwrt-linux-musl-ar
@@ -339,7 +310,7 @@ jobs:
           export NO_PYTHON=UnfortunatelyYes
           export NO_TCLTK=UnfortunatelyYes
 
-          echo "=== Building Git (with Rust/gix) ==="
+          echo "=== Building Git 2.38.5 ==="
           make \
             CC="$CC" \
             LD="$CC" \
@@ -504,6 +475,6 @@ jobs:
           gh release delete "$VERSION" --yes 2>/dev/null || true
           gh release create "$VERSION" \
             --title "Development Build (Latest)" \
-            --notes "Automatic build from commit ${{ github.sha }}%0A%0A**Platforms:**%0A- Linux mipsel musl soft-float (极路由 - 完全静态编译)%0A- 使用 OpenWrt SDK (mt7620) 交叉编译%0A- 内置 OpenSSL / cURL / Expat / PCRE2 / zlib / gettext%0A- 含 Rust/gix 组件%0A- 软浮点 (无 FPU 设备兼容)%0A- **完全静态链接，无需动态库**%0A- 所有 git 子命令 (git-*) 均静态链接%0A- 包含 git-web--browse / git-cvsserver 等可选组件" \
+            --notes "Automatic build from commit ${{ github.sha }}%0A%0A**Platforms:**%0A- Linux mipsel musl soft-float (极路由 - 完全静态编译)%0A- 使用 OpenWrt SDK (mt7620) 交叉编译%0A- Git 版本: 2.38.5 (无 Rust 依赖)%0A- 内置 OpenSSL / cURL / Expat / PCRE2 / zlib / gettext%0A- 软浮点 (无 FPU 设备兼容)%0A- **完全静态链接，无需动态库**%0A- 所有 git 子命令 (git-*) 均静态链接%0A- 包含 git-web--browse / git-cvsserver 等可选组件" \
             --prerelease \
             artifacts/git-mipsel-musl-sf.tar.gz
