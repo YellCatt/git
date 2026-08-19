@@ -20,14 +20,13 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
             build-essential \
+            autoconf automake libtool \      # 新增：git 仓库没有预生成的 configure，需要 autoconf 生成
             libssl-dev \
             zlib1g-dev \
             libexpat1-dev \
             gettext \
             perl \
             python3 \
-            tcl-dev \
-            tk-dev \
             pkg-config \
             xz-utils \
             wget \
@@ -56,7 +55,6 @@ jobs:
           curl -fsSL --retry 3 -o zlib-1.3.1.tar.gz \
             "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz"
           if [ $(stat -c%s zlib-1.3.1.tar.gz) -lt 100000 ]; then
-            echo "ERROR: zlib download looks like an error page, trying mirror..."
             curl -fsSL --retry 3 -o zlib-1.3.1.tar.gz \
               "https://sourceforge.net/projects/libpng/files/zlib/1.3.1/zlib-1.3.1.tar.gz/download"
           fi
@@ -64,17 +62,12 @@ jobs:
           cd zlib-1.3.1
 
           export PATH="$TOOLCHAIN_DIR/bin:$PATH"
-
           CC=mipsel-openwrt-linux-musl-gcc \
           AR=mipsel-openwrt-linux-musl-ar \
           RANLIB=mipsel-openwrt-linux-musl-ranlib \
-          ./configure \
-            --prefix=/tmp/zlib-mipsel \
-            --static
-
+          ./configure --prefix=/tmp/zlib-mipsel --static
           make -j$(nproc)
           make install
-
           echo "=== zlib installed ==="
           ls -la /tmp/zlib-mipsel/lib/
 
@@ -87,28 +80,19 @@ jobs:
           cd openssl-3.0.13
 
           export PATH="$TOOLCHAIN_DIR/bin:$PATH"
-
           CC=mipsel-openwrt-linux-musl-gcc \
           CXX=mipsel-openwrt-linux-musl-g++ \
           AR=mipsel-openwrt-linux-musl-ar \
           RANLIB=mipsel-openwrt-linux-musl-ranlib \
           ./Configure linux-mips32 \
             --prefix=/tmp/openssl-mipsel \
-            threads \
-            no-asm \
-            no-shared no-module no-legacy no-tests no-comp no-zlib no-ssl3 \
+            threads no-asm no-shared \
+            no-module no-legacy no-tests no-comp no-zlib no-ssl3 \
             -static -Os
-
           make -j$(nproc)
           make install_sw
-
-          CONF_H="/tmp/openssl-mipsel/include/openssl/opensslconf.h"
-          if ! grep -q "OPENSSL_THREADS" "$CONF_H" 2>/dev/null; then
-            echo "Injecting OPENSSL_THREADS into opensslconf.h..."
-            echo "#define OPENSSL_THREADS" >> "$CONF_H"
-          fi
-          echo "=== opensslconf.h OPENSSL_THREADS check ==="
-          grep "OPENSSL_THREADS" "$CONF_H" || true
+          echo "=== OpenSSL installed ==="
+          ls -la /tmp/openssl-mipsel/lib/
 
       - name: Cross-compile cURL (static)
         run: |
@@ -116,7 +100,6 @@ jobs:
           curl -fsSL --retry 3 -o curl-8.5.0.tar.xz \
             "https://curl.se/download/curl-8.5.0.tar.xz"
           if [ $(stat -c%s curl-8.5.0.tar.xz) -lt 1000000 ]; then
-            echo "ERROR: curl download too small, trying older version..."
             curl -fsSL --retry 3 -o curl.tar.xz \
               "https://curl.se/download/curl-8.4.0.tar.xz"
             tar xf curl.tar.xz
@@ -128,6 +111,8 @@ jobs:
           cd "$CURL_DIR"
 
           export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+          # 关键修复：强制 pkg-config 只看交叉编译的库，彻底屏蔽宿主的 x86_64 pkg-config
+          export PKG_CONFIG_LIBDIR="/tmp/openssl-mipsel/lib/pkgconfig:/tmp/zlib-mipsel/lib/pkgconfig"
 
           CC=mipsel-openwrt-linux-musl-gcc \
           AR=mipsel-openwrt-linux-musl-ar \
@@ -135,32 +120,18 @@ jobs:
           ./configure \
             --host=mipsel-openwrt-linux-musl \
             --prefix=/tmp/curl-mipsel \
-            --disable-shared \
-            --enable-static \
+            --disable-shared --enable-static \
             --with-openssl=/tmp/openssl-mipsel \
             --with-zlib=/tmp/zlib-mipsel \
-            --without-libpsl \
-            --without-nghttp2 \
-            --without-brotli \
-            --without-zstd \
-            --disable-ftp \
-            --disable-gopher \
-            --disable-imap \
-            --disable-pop3 \
-            --disable-smtp \
-            --disable-telnet \
-            --disable-rtsp \
-            --disable-mqtt \
-            --disable-smb \
-            --disable-ws \
-            --disable-wss \
-            CPPFLAGS="-I/tmp/openssl-mipsel/include -I/tmp/zlib-mipsel/include" \
+            --without-libpsl --without-nghttp2 --without-brotli --without-zstd \
+            --disable-ftp --disable-gopher --disable-imap --disable-pop3 \
+            --disable-smtp --disable-telnet --disable-rtsp --disable-mqtt \
+            --disable-smb --disable-ws --disable-wss \
+            CFLAGS="-Os -static" \
             LDFLAGS="-static -L/tmp/openssl-mipsel/lib -L/tmp/zlib-mipsel/lib" \
             LIBS="-lssl -lcrypto -lz -lpthread -ldl"
-
           make -j$(nproc)
           make install
-
           echo "=== cURL installed ==="
           ls -la /tmp/curl-mipsel/lib/
 
@@ -170,7 +141,6 @@ jobs:
           curl -fsSL --retry 3 -o expat-2.6.4.tar.xz \
             "https://github.com/libexpat/libexpat/releases/download/R_2_6_4/expat-2.6.4.tar.xz"
           if [ $(stat -c%s expat-2.6.4.tar.xz) -lt 1000000 ]; then
-            echo "ERROR: expat download too small, trying older version..."
             curl -fsSL --retry 3 -o expat.tar.xz \
               "https://github.com/libexpat/libexpat/releases/download/R_2_5_0/expat-2.5.0.tar.xz"
             tar xf expat.tar.xz
@@ -182,21 +152,17 @@ jobs:
           cd "$EXPAT_DIR"
 
           export PATH="$TOOLCHAIN_DIR/bin:$PATH"
-
           CC=mipsel-openwrt-linux-musl-gcc \
           AR=mipsel-openwrt-linux-musl-ar \
           RANLIB=mipsel-openwrt-linux-musl-ranlib \
           ./configure \
             --host=mipsel-openwrt-linux-musl \
             --prefix=/tmp/expat-mipsel \
-            --disable-shared \
-            --enable-static \
+            --disable-shared --enable-static \
             --without-xmlwf \
             CFLAGS="-Os -static"
-
           make -j$(nproc)
           make install
-
           echo "=== Expat installed ==="
           ls -la /tmp/expat-mipsel/lib/
 
@@ -206,7 +172,6 @@ jobs:
           curl -fsSL --retry 3 -o pcre2-10.44.tar.gz \
             "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.44/pcre2-10.44.tar.gz"
           if [ $(stat -c%s pcre2-10.44.tar.gz) -lt 500000 ]; then
-            echo "ERROR: pcre2 download too small, trying older version..."
             curl -fsSL --retry 3 -o pcre2.tar.gz \
               "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.42/pcre2-10.42.tar.gz"
             tar xzf pcre2.tar.gz
@@ -218,110 +183,78 @@ jobs:
           cd "$PCRE2_DIR"
 
           export PATH="$TOOLCHAIN_DIR/bin:$PATH"
-
           CC=mipsel-openwrt-linux-musl-gcc \
           AR=mipsel-openwrt-linux-musl-ar \
           RANLIB=mipsel-openwrt-linux-musl-ranlib \
           ./configure \
             --host=mipsel-openwrt-linux-musl \
             --prefix=/tmp/pcre2-mipsel \
-            --disable-shared \
-            --enable-static \
-            --disable-jit \
-            --disable-pcre2-16 \
-            --disable-pcre2-32 \
+            --disable-shared --enable-static \
+            --disable-jit --disable-pcre2-16 --disable-pcre2-32 \
             CFLAGS="-Os -static"
-
           make -j$(nproc)
           make install
-
           echo "=== PCRE2 installed ==="
           ls -la /tmp/pcre2-mipsel/lib/
 
-      - name: Cross-compile gettext (static)
-        run: |
-          cd /tmp
-          curl -fsSL --retry 3 -o gettext-0.22.5.tar.xz \
-            "https://ftp.gnu.org/gnu/gettext/gettext-0.22.5.tar.xz"
-          if [ $(stat -c%s gettext-0.22.5.tar.xz) -lt 1000000 ]; then
-            echo "ERROR: gettext download too small, trying older version..."
-            curl -fsSL --retry 3 -o gettext.tar.xz \
-              "https://ftp.gnu.org/gnu/gettext/gettext-0.21.tar.xz"
-            tar xf gettext.tar.xz
-            GETTEXT_DIR=$(find . -maxdepth 1 -type d -name 'gettext-*' | head -1)
-          else
-            tar xf gettext-0.22.5.tar.xz
-            GETTEXT_DIR="gettext-0.22.5"
-          fi
-          cd "$GETTEXT_DIR"
-
-          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
-
-          CC=mipsel-openwrt-linux-musl-gcc \
-          AR=mipsel-openwrt-linux-musl-ar \
-          RANLIB=mipsel-openwrt-linux-musl-ranlib \
-          ./configure \
-            --host=mipsel-openwrt-linux-musl \
-            --prefix=/tmp/gettext-mipsel \
-            --disable-shared \
-            --enable-static \
-            --without-libxml2 \
-            --disable-java \
-            --disable-native-java \
-            --disable-csharp \
-            CFLAGS="-Os -static"
-
-          make -j$(nproc)
-          make install
-
-          echo "=== gettext installed ==="
-          ls -la /tmp/gettext-mipsel/lib/
+      # 删除：gettext 编译步骤。NO_GETTEXT=Yes 根本不需要 libintl，省时间。
 
       - name: Build, Install & Verify Git
         run: |
           set -euo pipefail
-          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+          cd "$GITHUB_WORKSPACE"  # 回到 git 源码目录
 
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
           export CC=mipsel-openwrt-linux-musl-gcc
           export AR=mipsel-openwrt-linux-musl-ar
           export RANLIB=mipsel-openwrt-linux-musl-ranlib
           export STRIP=mipsel-openwrt-linux-musl-strip
-          export OBJCOPY=mipsel-openwrt-linux-musl-objcopy
-          export NM=mipsel-openwrt-linux-musl-nm
 
-          export CFLAGS="-Os -static -march=mips32 -mtune=mips32"
-          export CPPFLAGS="-I/tmp/openssl-mipsel/include -I/tmp/zlib-mipsel/include -I/tmp/curl-mipsel/include -I/tmp/expat-mipsel/include -I/tmp/pcre2-mipsel/include"
+          # 关键修复 1：pkg-config 只看交叉编译的库，不看宿主的
+          export PKG_CONFIG_LIBDIR="/tmp/openssl-mipsel/lib/pkgconfig:/tmp/curl-mipsel/lib/pkgconfig:/tmp/zlib-mipsel/lib/pkgconfig:/tmp/expat-mipsel/lib/pkgconfig:/tmp/pcre2-mipsel/lib/pkgconfig"
 
-          # 显式告诉 Git 每个依赖库的安装前缀
-          export CURLDIR=/tmp/curl-mipsel
-          export EXPATDIR=/tmp/expat-mipsel
-          export LIBPCREDIR=/tmp/pcre2-mipsel
-          export OPENSSLDIR=/tmp/openssl-mipsel
-          export ZLIB_PATH=/tmp/zlib-mipsel
+          # 关键修复 2：让 git 的 configure 找到交叉编译的 curl-config
+          export CURL_CONFIG=/tmp/curl-mipsel/bin/curl-config
 
-          export LDFLAGS="-static"
+          # 关键修复 3：生成 configure 脚本（git 仓库 clone 出来的代码没有预生成的 configure）
+          echo "=== Generating configure script ==="
+          make configure
 
-          # 禁用宿主机的 pkg-config 和 curl-config，防止它们返回 x86_64 路径干扰交叉编译
-          export PKG_CONFIG=/bin/false
-          export CURL_CONFIG=/bin/false
+          # 关键修复 4：正式运行 ./configure，正确传递所有交叉编译参数
+          echo "=== Running configure ==="
+          ./configure \
+            --host=mipsel-openwrt-linux-musl \
+            --prefix=/usr/local \
+            --with-openssl=/tmp/openssl-mipsel \
+            --with-expat=/tmp/expat-mipsel \
+            --with-libpcre2=/tmp/pcre2-mipsel \
+            --with-zlib=/tmp/zlib-mipsel \
+            --without-tcltk \
+            --without-python \
+            --without-gettext \
+            --without-iconv \
+            ac_cv_iconv_omits_bom=no \
+            ac_cv_fread_reads_directories=no \
+            ac_cv_snprintf_returns_bogus=no \
+            CFLAGS="-Os -static -march=mips32 -mtune=mips32" \
+            CPPFLAGS="-I/tmp/openssl-mipsel/include -I/tmp/zlib-mipsel/include -I/tmp/curl-mipsel/include -I/tmp/expat-mipsel/include -I/tmp/pcre2-mipsel/include" \
+            LDFLAGS="-static -L/tmp/openssl-mipsel/lib -L/tmp/curl-mipsel/lib -L/tmp/zlib-mipsel/lib -L/tmp/expat-mipsel/lib -L/tmp/pcre2-mipsel/lib" \
+            LIBS="-lcurl -lssl -lcrypto -lz -lpthread -ldl -lm" \
+            CC="$CC" \
+            AR="$AR" \
+            RANLIB="$RANLIB"
 
-          # 功能开关
-          export USE_LIBPCRE2=YesPlease
-          export NO_GETTEXT=UnfortunatelyYes
-          export NO_PYTHON=UnfortunatelyYes
-          export NO_TCLTK=UnfortunatelyYes
-
+          # 关键修复 5：编译。变量作为 make 参数传递，优先级最高，不会被 Makefile 内置规则覆盖
           echo "=== Building Git ==="
-          # 关键修复：命令行显式传入工具链变量和 CURL 库参数
-          # Git 的 Makefile 里有 "CC = cc" 会覆盖环境变量，必须通过命令行强制覆盖
           make \
             CC="$CC" \
             LD="$CC" \
             AR="$AR" \
             RANLIB="$RANLIB" \
             STRIP="$STRIP" \
-            CURL_LIBCURL="-L/tmp/curl-mipsel/lib -lcurl" \
-            CURL_CFLAGS="-I/tmp/curl-mipsel/include" \
+            NO_GETTEXT=Yes \
+            NO_PYTHON=Yes \
+            NO_TCLTK=Yes \
             prefix=/usr/local \
             -j$(nproc)
 
@@ -356,7 +289,7 @@ jobs:
           echo "Installed git binary size: ${INSTALLED_SIZE} bytes"
           file "$INSTALLED_GIT"
 
-          echo "=== Fixing hardlinks (git-receive-pack, git-upload-archive) ==="
+          echo "=== Fixing hardlinks ==="
           cd /tmp/git-mipsel/usr/local/bin
           if [ -f git-upload-pack ]; then
             [ -e git-receive-pack ] && rm -f git-receive-pack
@@ -396,8 +329,8 @@ jobs:
       - name: Verify static link & soft-float
         run: |
           export PATH="$TOOLCHAIN_DIR/bin:$PATH"
-
           GIT_BIN="/tmp/git-mipsel/usr/local/bin/git"
+
           echo "=== Checking if git is statically linked ==="
           file "$GIT_BIN"
 
@@ -416,8 +349,11 @@ jobs:
             echo "OK: No FPU instructions found (soft-float confirmed)."
           fi
 
-          echo "=== Checking linked libraries (should be empty for static) ==="
+          echo "=== Checking linked libraries ==="
           readelf -d "$GIT_BIN" | grep -E "NEEDED|Shared library" || echo "OK: No dynamic libraries linked."
+
+          echo "=== Architecture details ==="
+          readelf -A "$GIT_BIN" | grep -E "Tag_CPU_name|Tag_ABI_FP" || true
 
       - name: Cleanup & Package
         run: |
@@ -477,6 +413,6 @@ jobs:
           gh release delete "$VERSION" --yes 2>/dev/null || true
           gh release create "$VERSION" \
             --title "Development Build (Latest)" \
-            --notes "Automatic build from commit ${{ github.sha }}%0A%0A**Platforms:**%0A- Linux mipsel musl soft-float (极路由 - 完全静态编译)%0A- 使用 OpenWrt SDK (mt7620) 交叉编译%0A- 内置 OpenSSL / cURL / Expat / PCRE2 / zlib / gettext%0A- 软浮点 (无 FPU 设备兼容)%0A- **完全静态链接，无需动态库**%0A- 所有 git 子命令 (git-*) 均静态链接%0A- 包含 git-web--browse / git-cvsserver 等可选组件" \
+            --notes "Automatic build from commit ${{ github.sha }}%0A%0A**Platforms:**%0A- Linux mipsel musl soft-float (极路由 - 完全静态编译)%0A- 使用 OpenWrt SDK (mt7620) 交叉编译%0A- 内置 OpenSSL / cURL / Expat / PCRE2 / zlib%0A- 软浮点 (无 FPU 设备兼容)%0A- **完全静态链接，无需动态库**%0A- 所有 git 子命令 (git-*) 均静态链接" \
             --prerelease \
             artifacts/git-mipsel-musl-sf.tar.gz
