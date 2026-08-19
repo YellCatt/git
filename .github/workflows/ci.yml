@@ -18,9 +18,10 @@ jobs:
       - name: Install host dependencies
         run: |
           sudo apt-get update -qq
+          # 新增：autoconf/automake/libtool 用于从 git 仓库生成 configure 脚本
           sudo apt-get install -y -qq \
             build-essential \
-            autoconf automake libtool \      # 新增：git 仓库没有预生成的 configure，需要 autoconf 生成
+            autoconf automake libtool \
             libssl-dev \
             zlib1g-dev \
             libexpat1-dev \
@@ -111,7 +112,6 @@ jobs:
           cd "$CURL_DIR"
 
           export PATH="$TOOLCHAIN_DIR/bin:$PATH"
-          # 关键修复：强制 pkg-config 只看交叉编译的库，彻底屏蔽宿主的 x86_64 pkg-config
           export PKG_CONFIG_LIBDIR="/tmp/openssl-mipsel/lib/pkgconfig:/tmp/zlib-mipsel/lib/pkgconfig"
 
           CC=mipsel-openwrt-linux-musl-gcc \
@@ -197,12 +197,10 @@ jobs:
           echo "=== PCRE2 installed ==="
           ls -la /tmp/pcre2-mipsel/lib/
 
-      # 删除：gettext 编译步骤。NO_GETTEXT=Yes 根本不需要 libintl，省时间。
-
       - name: Build, Install & Verify Git
         run: |
           set -euo pipefail
-          cd "$GITHUB_WORKSPACE"  # 回到 git 源码目录
+          cd "$GITHUB_WORKSPACE"
 
           export PATH="$TOOLCHAIN_DIR/bin:$PATH"
           export CC=mipsel-openwrt-linux-musl-gcc
@@ -210,17 +208,12 @@ jobs:
           export RANLIB=mipsel-openwrt-linux-musl-ranlib
           export STRIP=mipsel-openwrt-linux-musl-strip
 
-          # 关键修复 1：pkg-config 只看交叉编译的库，不看宿主的
           export PKG_CONFIG_LIBDIR="/tmp/openssl-mipsel/lib/pkgconfig:/tmp/curl-mipsel/lib/pkgconfig:/tmp/zlib-mipsel/lib/pkgconfig:/tmp/expat-mipsel/lib/pkgconfig:/tmp/pcre2-mipsel/lib/pkgconfig"
-
-          # 关键修复 2：让 git 的 configure 找到交叉编译的 curl-config
           export CURL_CONFIG=/tmp/curl-mipsel/bin/curl-config
 
-          # 关键修复 3：生成 configure 脚本（git 仓库 clone 出来的代码没有预生成的 configure）
           echo "=== Generating configure script ==="
           make configure
 
-          # 关键修复 4：正式运行 ./configure，正确传递所有交叉编译参数
           echo "=== Running configure ==="
           ./configure \
             --host=mipsel-openwrt-linux-musl \
@@ -244,7 +237,6 @@ jobs:
             AR="$AR" \
             RANLIB="$RANLIB"
 
-          # 关键修复 5：编译。变量作为 make 参数传递，优先级最高，不会被 Makefile 内置规则覆盖
           echo "=== Building Git ==="
           make \
             CC="$CC" \
