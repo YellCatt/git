@@ -18,7 +18,6 @@ jobs:
       - name: Install host dependencies
         run: |
           sudo apt-get update -qq
-          # 新增：autoconf/automake/libtool 用于从 git 仓库生成 configure 脚本
           sudo apt-get install -y -qq \
             build-essential \
             autoconf \
@@ -36,6 +35,18 @@ jobs:
             curl \
             libpcre2-dev \
             file
+
+      # 关键修复：GitHub Actions Ubuntu 镜像预装了 rustup/cargo
+      # 必须彻底卸载，否则 Git 的 configure 会检测到 cargo，强制构建 Rust 组件
+      - name: Remove pre-installed Rust toolchain
+        run: |
+          rustup self uninstall -y 2>/dev/null || true
+          sudo rm -rf /usr/local/cargo /usr/local/rustup /root/.cargo /root/.rustup ~/.cargo ~/.rustup
+          hash -r
+          echo "=== Verifying no Rust tools remain ==="
+          ! which cargo || (echo "ERROR: cargo still exists!"; exit 1)
+          ! which rustc || (echo "ERROR: rustc still exists!"; exit 1)
+          echo "OK: Rust toolchain fully removed."
 
       - name: Install OpenWrt SDK for mt7620
         run: |
@@ -213,9 +224,6 @@ jobs:
           export PKG_CONFIG_LIBDIR="/tmp/openssl-mipsel/lib/pkgconfig:/tmp/curl-mipsel/lib/pkgconfig:/tmp/zlib-mipsel/lib/pkgconfig:/tmp/expat-mipsel/lib/pkgconfig:/tmp/pcre2-mipsel/lib/pkgconfig"
           export CURL_CONFIG=/tmp/curl-mipsel/bin/curl-config
 
-          # 关键修复：让 configure 检测不到 rustc，彻底禁用 Rust 组件
-          export RUSTC=/bin/false
-
           echo "=== Generating configure script ==="
           make configure
 
@@ -252,7 +260,6 @@ jobs:
             NO_GETTEXT=Yes \
             NO_PYTHON=Yes \
             NO_TCLTK=Yes \
-            NO_RUST=Yes \
             prefix=/usr/local \
             -j$(nproc)
 
