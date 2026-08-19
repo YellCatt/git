@@ -312,13 +312,15 @@ jobs:
           export NO_TCLTK=UnfortunatelyYes
 
           echo "=== Building Git 2.38.5 ==="
+          # 关键修复：CURL_LIBCURL 包含完整依赖链和全部 -L 路径
+          # 顺序：-lcurl 在前，-lssl -lcrypto -lz 在后，确保静态链接器能正确解析
           make \
             CC="$CC" \
             LD="$CC" \
             AR="$AR" \
             RANLIB="$RANLIB" \
             STRIP="$STRIP" \
-            CURL_LIBCURL="-L/tmp/curl-mipsel/lib -lcurl" \
+            CURL_LIBCURL="-L/tmp/curl-mipsel/lib -L/tmp/openssl-mipsel/lib -L/tmp/zlib-mipsel/lib -lcurl -lssl -lcrypto -lz -lpthread -ldl" \
             CURL_CFLAGS="-I/tmp/curl-mipsel/include" \
             NO_REGEX=NeedsStartEnd \
             prefix=/usr/local \
